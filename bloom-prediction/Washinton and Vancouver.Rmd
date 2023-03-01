@@ -1,0 +1,250 @@
+---
+title: "other data"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(rnoaa)
+library(tidyverse)
+library(itsmr)
+library(fpp2)
+library(forecast)
+library(urca)
+```
+
+```{r}
+stataions<-ghcnd_stations()
+```
+
+```{r}
+get_temperature <- function (stationid) {
+  ghcnd_search(stationid = stationid, var = c("tmax"), 
+               date_min = "1920-01-01", date_max = "2023-02-20")[[1]] %>%
+  mutate(year = as.integer(format(date, "%Y")),
+         month = as.integer(strftime(date, '%m')) %% 12, # make December "0"
+         season = cut(month, breaks = c(0, 2, 5, 8, 11),
+                      include.lowest = TRUE,
+                      labels = c("Winter", "Spring", "Summer", "Fall")),
+         year = if_else(month == 0, year + 1L, year)) %>%
+  group_by(year, season) %>%
+  summarize(tmax_avg = mean(tmax, na.rm = TRUE))
+}
+
+```
+
+```{r}
+washingtondc1=get_temperature("USC00186350")
+```
+
+
+```{r}
+head(washingtondc1)
+```
+```{r}
+winterw<-washingtondc1%>%filter(season=="Spring")
+head(winterw)
+
+
+```
+
+```{r}
+wa_raw<- read.csv("data/washingtondc.csv")
+
+wa_1950<-wa_raw[wa_raw$year>=1950 & wa_raw$year<=2022,]
+head(wa_1950)
+
+
+```
+
+```{r}
+newdata<-left_join(winterw,wa_1950,by="year")
+
+```
+
+# mod1.1 spring max tempreture vs bloom_day
+
+```{r}
+mod1.1=lm(bloom_doy~tmax_avg,data=newdata)
+summary(mod1.1)
+```
+
+
+# mod1.2 arima ts model for residules form mod1.1
+```{r}
+wa.ts22<-ts(data=wa_raw$bloom_doy[wa_raw$year>=1950],start=1950) # raw data for doy
+plot.ts(wa.ts22,main="wa_ts22")
+residts=ts(mod1.1$residuals,start=1950)
+plot.ts(residts,main="residual_ts for mod1.1")
+
+acf(residts,main="acf for residual from mod1.1")
+```
+
+
+
+```{r}
+auto.arima(residts)
+```
+
+```{r}
+mod1.2=auto.arima(residts)
+summary(mod1.2)
+```
+
+```{r}
+forecast(mod1.2,5)
+```
+
+
+```{r}
+for1=forecast(mod1.2,5)
+plot(forecast(mod1.2,5))
+
+for1
+```
+
+# mod 1.3 arima ts model for max tempture
+
+
+```{r}
+head(newdata)
+
+wa.ts23<-ts(newdata$tmax_avg[newdata$year>=1950],start = 1950)
+plot(wa.ts23)
+acf(wa.ts23) # almost stationary
+```
+
+
+```{r}
+fc <- holt(wa.ts23, damped=TRUE,h=10) # use holt's method 
+```
+
+
+
+```{r}
+fc
+autoplot(fc)
+
+accuracy(fc)
+
+tempfc2=fc[[5]][,1][1:10]
+
+tempfc2
+```
+
+final prediction
+
+```{r}
+tempfc2_m=as.matrix(tempfc2)
+#tempfc2_d=as.data.frame(tmax_avg=tempfc2_m)
+
+
+tempfc2_m
+```
+
+```{r}
+
+mod1.1forecast <- mod1.1$coefficients[1]+mod1.1$coefficients[2]*tempfc2_m
+mod1.1forecast
+```
+
+```{r}
+forecast(mod1.2,10)
+mod1.2forcast=forecast(mod1.2,10)[[4]][1:10]
+```
+# final prediction for WA 
+```{r}
+
+
+wafinalpred=round(mod1.2forcast+mod1.1forecast)
+
+wafinalpred
+```
+
+```{r}
+
+
+```
+
+```{r}
+plot.ts(wa.ts22,xlim=c(1950, max(time(wa.ts22))+10))
+tyears = ((max(time(wa.ts22))+1):(max(time(wa.ts22))+10))
+lines(tyears,wafinalpred,col="red") 
+```
+
+
+# prediction for Vancouver 
+
+```{r}
+van1<-get_temperature("CA001108395")
+winterw1<-van1%>%filter(season=="Spring")
+head(winterw1)
+
+```
+
+
+```{r}
+van.t<-ts(winterw1$tmax_avg,start = 1958)
+plot(van.t,main="temp")
+acf(van.t)   # stationary
+```
+
+```{r}
+fc <- holt(van.t, damped=TRUE,h=10) # use holt's method 
+
+```
+
+```{r}
+fc
+autoplot(fc)
+tempfc21=fc[[2]]
+tempfc2_m1=as.matrix(tempfc21)
+tempfc2_m1
+```
+
+#use WA lm our final prediction for vancuver is:
+```{r}
+van_prediction=mod1.1$coefficients[1]+mod1.1$coefficients[2]*tempfc2_m1
+round(van_prediction)
+```
+
+
+try lasso
+
+```{r}
+alldata<- read.csv("data/USA-NPN_individual_phenometrics_data.csv")
+head(alldata)
+```
+```{r}
+library(glmnet)
+```
+
+```{r}
+x <- model.matrix(First_Yes_DOY ~ Latitude +Elevation_in_Meters+Tmax_Winter+Tmax_Spring+Tmin_Winter+Tmin_Spring, data = alldata)
+y <- alldata$First_Yes_DOY
+```
+
+
+```{r}
+grid.lambda <- 10^seq(10, -2, length = 100)
+
+#Fit the model across the grid of lambda values
+cvm7=cv.glmnet(x,y,alpha = 1, lambda = grid.lambda,nfolds = 5)
+
+
+plot(cvm7)
+as.matrix(coef(cvm7, cvm7$lambda.min))
+```
+too large mse, 
+
+
+
+
+
+
+
+
+
+
+

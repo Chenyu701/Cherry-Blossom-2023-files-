@@ -1,0 +1,241 @@
+---
+title: "prediction for kyoto"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r}
+library(rnoaa)
+library(tidyverse)
+library(itsmr)
+library(fpp2)
+library(forecast)
+library(urca)
+```
+
+
+```{r}
+stataions<-ghcnd_stations()
+```
+
+
+```{r}
+get_temperature <- function (stationid) {
+  ghcnd_search(stationid = stationid, var = c("tmax"), 
+               date_min = "1920-01-01", date_max = "2023-02-20")[[1]] %>%
+  mutate(year = as.integer(format(date, "%Y")),
+         month = as.integer(strftime(date, '%m')) %% 12, # make December "0"
+         season = cut(month, breaks = c(0, 2, 5, 8, 11),
+                      include.lowest = TRUE,
+                      labels = c("Winter", "Spring", "Summer", "Fall")),
+         year = if_else(month == 0, year + 1L, year)) %>%
+  group_by(year, season) %>%
+  summarize(tmax_avg = mean(tmax, na.rm = TRUE))
+}
+```
+
+
+```{r}
+kyoto1<-get_temperature("JA000047759")
+```
+
+```{r}
+winterw<-kyoto1%>%filter(season=="Spring")
+head(winterw)
+
+
+```
+
+```{r}
+ky_raw<- read.csv("data/kyoto.csv")
+
+ky_1950<-ky_raw[ky_raw$year>=1950 & ky_raw$year<=2022,]
+head(ky_1950)
+```
+
+```{r}
+newdata<-left_join(winterw,ky_1950,by="year")
+
+
+```
+
+# mod1.1 spring max tempreture vs bloom_day
+
+```{r}
+mod1.1=lm(bloom_doy~tmax_avg,data=newdata)
+summary(mod1.1)
+```
+
+# mod1.2 arima ts model for residules form mod1.1
+```{r}
+ky.ts22<-ts(data=ky_raw$bloom_doy[ky_raw$year>=1950],start=1950) # raw data for doy
+plot.ts(ky.ts22,main="bloom_doy")
+residts=ts(mod1.1$residuals,start=1950)
+plot.ts(residts,main="residual_ts for mod1.1")
+
+acf(residts,main="acf for residual from mod1.1")
+```
+
+```{r}
+mod1.2=auto.arima(residts)
+summary(mod1.2)
+```
+
+```{r}
+forecast(mod1.2,5)
+```
+
+```{r}
+for1=forecast(mod1.2,5)
+plot(forecast(mod1.2,5))
+
+for1
+```
+
+
+# mod 1.3 arima ts model for max tempture
+
+use the point forcasted 
+```{r}
+head(newdata)
+
+ky.ts23<-ts(newdata$tmax_avg[newdata$year>=1950],start = 1950)
+plot(ky.ts23,main="temp")
+acf(ky.ts23) 
+```
+# holt's method has smaller training error, use holt's method 
+
+```{r}
+fc <- holt(ky.ts23, damped=TRUE,h=10) # use holt's method 
+
+fc3<-auto.arima(ky.ts23) # use autoarima
+```
+
+```{r}
+fc
+autoplot(fc)
+forecast(fc3,h=10)
+plot(forecast(fc3,h=10))
+accuracy(fc)
+accuracy(fc3)
+tempfc2=fc[[2]]
+tempfc2
+```
+
+# final prediction choose this version, since temp captures someamount of variability, the residual left seems not depend on time, holt's method for predicting the tempture looks quite resonable.
+
+```{r}
+tempfc2_m=as.matrix(tempfc2)
+
+
+tempfc2_m
+```
+
+```{r}
+
+mod1.1forecast <- mod1.1$coefficients[1]+mod1.1$coefficients[2]*tempfc2_m
+mod1.1forecast
+```
+
+```{r}
+forecast(mod1.2,10)
+mod1.2forcast=forecast(mod1.2,10)[[4]][1:10]
+```
+
+# final prediction for KYOTO 
+```{r}
+
+
+kyfinalpred=round(mod1.2forcast+mod1.1forecast)
+
+kyfinalpred
+
+
+```
+
+
+```{r}
+plot.ts(ky.ts22,xlim=c(1950, max(time(ky.ts22))+10))
+tyears = ((max(time(ky.ts22))+1):(max(time(ky.ts22))+10))
+lines(tyears,kyfinalpred,col="red") 
+```
+
+
+# since kyoto ts showa some seasonality, may be useful to use arima on doy data 
+
+```{r}
+ky_1950<-ky_raw[ky_raw$year>=1950 & ky_raw$year<=2022,"bloom_doy"]
+ky_1950_ts<-ts(data=ky_1950,start=1950)
+```
+
+```{r}
+acf(ky_1950_ts,20, ylim=range(-1,1))
+```
+
+```{r}
+mod2<-auto.arima(ky_1950_ts)
+```
+
+
+```{r}
+forecast(mod2,10)
+
+plot(forecast(mod2,10))
+```
+using holt's method
+
+
+```{r}
+train <- window(ky_1950_ts, end=c(2010))
+h <- length(ky_1950_ts) - length(train)
+ETS <- forecast(ets(train), h=h)
+ARIMA <- forecast(auto.arima(train),
+  h=h)
+HOLT<-holt(train,damped=TRUE,h=h)
+NNAR <- forecast(nnetar(train), h=h)
+TBATS <- forecast(tbats(train, biasadj=TRUE), h=h)
+
+
+autoplot(ky_1950_ts) +
+  autolayer(ETS, series="ETS", PI=FALSE) +
+  autolayer(ARIMA, series="ARIMA", PI=FALSE) +
+  autolayer(HOLT,series="HOLT",PI=FALSE)+
+  autolayer(NNAR, series="NNAR", PI=FALSE) +
+  autolayer(TBATS, series="TBATS", PI=FALSE) +
+  
+ 
+  ggtitle("resids")
+```
+
+```{r}
+
+
+c(ARIMA = accuracy(ARIMA, ky_1950_ts)["Test set","RMSE"],
+  ETS = accuracy(ETS, ky_1950_ts)["Test set","RMSE"],
+  NNAR = accuracy(NNAR, ky_1950_ts)["Test set","RMSE"],
+  TBATS = accuracy(TBATS, ky_1950_ts)["Test set","RMSE"],
+  HOLT = accuracy(HOLT, ky_1950_ts)["Test set","RMSE"]
+  )
+```
+
+
+```{r}
+kyfinalpredict2<-holt(ky_1950_ts,damped=TRUE,h=10)
+kyfinalpredict2
+autoplot(kyfinalpredict2)
+```
+
+final 
+```{r}
+kyfinalpredict3<-forecast(ets(ky_1950_ts), h=10)
+
+plot(kyfinalpredict3)
+
+kyfinalpredict3
+```
+
+
+
+
